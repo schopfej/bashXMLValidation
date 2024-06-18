@@ -2,7 +2,7 @@
 
 ############################################################
 ############################################################
-############### Selektionsjob ########################
+############### Z Selektionsjob ########################
 #
 ##
 ### Program that checks whether the ID of .zip
@@ -11,58 +11,104 @@
 ##
 #
 ############################################################
-readonly DIRECTORY_FILES="/Users/schopfej/Documents/CronJob/TestFiles"
-readonly TARGET_DIR="/Users/schopfej/Documents/CronJob/TargetOrdner"
-readonly CORRUPTED_DIR="/Users/schopfej/Documents/CronJob/CorruptedFileFolder"
+
+
+# Function to display help
+function display_help {
+    echo "Usage: $0 <directory_path_1> <directory_path_2> [T]"
+    echo
+    echo "Program that checks whether the ID of .zip"
+    echo "and .xml are the same and checks whether the .xml in .zip"
+    echo "meets certain conditions."
+    echo
+    echo "Parameters:"
+    echo "  <directory_path_1>  Path to the source directory containing .zip and .xml files."
+    echo "  <directory_path_2>  Path to the target directory where files will be moved."
+    echo "  [T]                Optional. If provided, activates test mode (does not move files)."
+    echo
+    echo "Options:"
+    echo "  -h, --help         Show this help message and exit."
+    exit 0
+}
+
+# Check for help request
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    display_help
+fi
+
+# Check if the script receives two valid directory paths
+if [[ -z "$1" || ! -d "$1" ]]; then
+    echo "Error: First parameter is not a valid directory path."
+    exit 1
+fi
+
+if [[ -z "$2" || ! -d "$2" ]]; then
+    echo "Error: Second parameter is not a valid directory path."
+    exit 1
+fi
+
+readonly DIRECTORY_FILES="$1"  
+readonly TARGET_DIR="$2"
+
+
+TEST_MODUS=false
+
+# Check if the third parameter is "T" to activate test mode
+if [[ "$3" == "T" ]]; then
+    echo "Testmodus activated"
+    TEST_MODUS=true
+fi
+
+readonly TEST_MODUS
+
+
+# gerade zuerst prüfen, ob die zwei Verzeichnisse existieren
+# -d prüft, ob das Verzeichnis existiert
+# ToDo -w prüft, ob das File änderbar ist
 
 # XPath constants
-readonly XPATH_RECIPIENT_ID="string(//*[local-name()='recipientId'])"
-readonly XPATH_MESSAGE_TYPE="string(//*[local-name()='messageType'])"
-readonly XPATH_SUB_MESSAGE_TYPE="string(//*[local-name()='subMessageType'])"
+readonly XPATH_RECIPIENT_ID="//*[namespace-uri()='http://www.testtest.ch/xmlns/eCH' and local-name()='recipientId']/text()"
+readonly XPATH_MESSAGE_TYPE="//*[namespace-uri()='http://www.testtest.ch/xmlns/eCH' and local-name()='messageType']/text()"
+readonly XPATH_SUB_MESSAGE_TYPE="//*[namespace-uri()='http://www.testtest.ch/xmlns/eCH' and local-name()='subMessageType']/text()"
 
-# Ensure we are in the correct directory
-cd "$DIRECTORY_FILES" || exit
 
 # Function to log errors with a timestamp
 err() {
    echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*" >&2
 }
 
+# Function to log messages with a timestamp
+msg() {
+   echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')]: $*" >&1
+}
+
 # Filter ZIP and XML files at the beginning
-aFiles_zip=(*.zip)
-aFiles_xml=(*.xml)
-aValidZip=()
-
-
+zip_file_array=(*.zip)
+xml_file_array=(*.xml)
+valid_filepair_array=()
 ###########################################
 # validation of ZIP and XML Files
-# check whether zip and xml exists with same ID 
+# check whether zip and xml exists with same ID
 # if so, save valid ZIP names in array
 ##########################################
-for file_zip in "${aFiles_zip[@]}"; do
-   if [[ $file_zip == data_*.zip ]]; then
-       # Test if the ZIP file is corrupted
-       if ! zip -T "$file_zip"; then
-           err "The $file_zip is corrupted"
+for file_zip in "${zip_file_array[@]}"; do
+   # Test if the ZIP file is corrupt
+   if zip -T "$file_zip"; then
+       # Remove the 'data_' prefix and '.zip' suffix to extract the code
+       data_id="${file_zip#data_}"
+       data_id="${data_id%.zip}"
+       envl_xml="envl_$data_id.xml"
+       if [[ -f "$envl_xml" ]]; then
+           if xmllint --noout "$envl_xml"; then
+               valid_filepair_array+=("$data_id")
+           else
+               err "The xml file $envl_xml is corrupt."
+           fi
        else
-           # Remove the 'data_' prefix and '.zip' suffix to extract the code
-           data_id="${file_zip#data_}"
-           data_id="${data_id%.zip}"
-           # Loop through the xml array and test wheter there is an equal ID
-           for file_xml in "${aFiles_xml[@]}"; do
-               if [[ $file_xml == envl_$"data_id".xml ]]; then
-                   # Test if the XML file is corrupted
-                   if ! xmllint --noout "$file_xml"; then
-                       err "The $file_xml is corrupted"
-                       # mv "$file" "$CORRUPTED_DIR/"
-                   fi
-               else
-                   # save the ID in array
-                   aValidZip+=("$file_zip")
-                   break
-               fi
-           done
+           err "The xml file $envl_xml doesn't exist."
        fi
+   else
+       err "The archive file $file_zip is corrupt."
    fi
 done
 
@@ -70,35 +116,36 @@ done
 # now we process the array with valid ZIP files
 # check whether condition in message.xml met
 ############################################
-for zip_file in "${aValidZip[@]}"; do
+for data_id in "${valid_filepair_array[@]}"; do
    # Unzip and extract message.xml content
-   message_xml_content=$(unzip -p "$zip_file" message.xml)
+   message_xml_content=$(unzip -p "data_$data_id.zip" message.xml)
    if [[ $? -ne 0 ]]; then
-       err "The $zip_file has no xml for testing"
-       continue # Skip to the next zip_file
+       err "The $data_id has no xml for testing"
+       continue # Skip to the next data_id
    fi
-   
+
    # Extract the needed values with xmllint
    recipient_id=$(echo "$message_xml_content" | xmllint --xpath "$XPATH_RECIPIENT_ID" -)
    message_type=$(echo "$message_xml_content" | xmllint --xpath "$XPATH_MESSAGE_TYPE" -)
    sub_message_type=$(echo "$message_xml_content" | xmllint --xpath "$XPATH_SUB_MESSAGE_TYPE" -)
-   
+
    # Prüfen, ob die Bedingungen erfüllt sind
-   if [[ "$recipient_id" == "check-20" || "$recipient_id" == "check://T2" ]]; then
-       if [[ "$message_type" == "Hello World" && "$sub_message_type" == "1" ]]; then
-           echo "Criteria met, handling files..."
-           echo "$zip_file"
-           # Move files to the target directory if all criteria are met
-           # mv "$zip_file" "$TARGET_DIR/"
-           xml_file="envl_${zip_file#data_}"
+   if [[ "$recipient_id" == "set://2-Bzz-20" || "$recipient_id" == "set://T4-Bzz-22" ]]; then
+       if [[ "$message_type" == "hello World" && "$sub_message_type" == "1" ]]; then
+           msg "Criteria met, handling files of message ID $data_id ."
+          
+           xml_file="envl_${data_id#data_}"
            xml_file="${xml_file%.zip}.xml"
-           # mv "$xml_file" "$TARGET_DIR/"
+           # toDo mv
+
+           if [[ "$TEST_MODUS" == false ]]; then
+           mv "data_$data_id.zip" "$TARGET_DIR/"
+           mv "envl_$data_id.xml" "$TARGET_DIR/"
+           fi 
        else
-           echo "Message type or sub message type does not match."
+           err "Message type or sub message type does not match."
        fi
    else
-       echo "Recipient ID does not match."
+       err "Recipient ID does not match."
    fi
 done
-
-
